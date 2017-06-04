@@ -4,6 +4,10 @@
 | SHOWMULTITV
 |--------------------------------------------------------------------------
 |
+| @author:  ShCoder sitemart@gmail.com
+| 
+| @version: 0.2.1
+|
 | usage: 
         placeholders
         [[mtv?
@@ -11,7 +15,7 @@
             &docId=`9` 
             &toPlaceholders=`1`
             &suf=`cnt`
-            &depth=`1`
+            &display=`1`
         ]]
         TPL
         [[mtv?
@@ -26,7 +30,11 @@
 
 include_once(MODX_BASE_PATH . 'assets/snippets/DocLister/lib/DLTemplate.class.php');
 
-// SETTINGS
+/*
+|
+| SETTINGS
+|
+*/
 
 $tvId = isset($tvId) ? intval($tvId) : '';
 $docId = isset($docId) ? intval($docId) : $modx->documentIdentifier;
@@ -35,17 +43,33 @@ $tpl = isset($tpl) ? $tpl : ''; // шаблон
 $wrapTpl = isset($wrapTpl) ? $wrapTpl : '@CODE: [+wrap+]'; // внешний шаблон  
 $firstTpl = isset($firstTpl) ? $firstTpl : '';
 $lastTpl = isset($lastTpl) ? $lastTpl : '';
+$emptyTpl = isset($emptyTpl) ? $emptyTpl : $wrapTpl;
 
-$toPlaceholders = isset($toPlaceholders) ? $toPlaceholders : '0'; // 1 выводим в виде плейсхолдеров, 0 - парсим чанк
-$suf = isset($suf) ? $suf : 'cnt';
-$depth = isset($depth) ? intval($depth) : 'all'; // сколько уровней парсим в массиве значений мульти тв, 1 или все
-$check = isset($check) ? $check : ''; // название параметра (чекбокс) в мульти тв, по которому будет даваться разрешение на вывод
+$display = isset($display) ? intval($display) : 'all'; // сколько уровней парсим в массиве значений мульти тв, 1 или все
+
 $thumbField = isset($thumbField) ? $thumbField : '';
 $thumbOptions = isset($thumbOptions) ? $thumbOptions : 'w_100,h_200,far_C,bg_FFFFFF';
-$outPlaceholder = isset($outPlaceholder) ? $outPlaceholder : 0; // 1 out to placeholder, 0 - return out
-$prepare = isset($prepare) ? $prepare : '';
 
+// PLACEGOLDERS
+$suf = isset($suf) ? $suf : 'cnt';
+$toPlaceholders = isset($toPlaceholders) ? $toPlaceholders : '0'; // 1 выводим в виде плейсхолдеров, 0 - парсим чанк
+$phFieldName = isset($phFieldName) ? $phFieldName : ''; // имя поля по которому будет формироваться плейсхолдер
+$phFieldValue = isset($phFieldValue) ? $phFieldValue : ''; // поле-значение для плейхсолдера
+$outPlaceholder = isset($outPlaceholder) ? $outPlaceholder : 0; // 1 out to placeholder, 0 - return out
+
+// PREPARE
+$prepare = isset($prepare) ? $prepare : '';
+$beforePrepare = isset($beforePrepare) ? $beforePrepare : '';
+$afterPrepare = isset($afterPrepare) ? $afterPrepare : '';
+
+// сортировка
+$sortDir = isset($sortDir) ? $sortDir : '';
+
+// CONFIG 
 $p = &$modx->event->params; // all params
+$docData = $modx->getDocument($docId);
+$confArr = array_merge($p, $docData); // params and doc data
+
 
 // Формируем кастомный массив шаблонов на оснвое 
 // названия поля MTV и параметра сниппета шаблона, в котором содержится шаблон вывода
@@ -60,89 +84,168 @@ foreach ($p as $key => $value) {
     }
 }
 
-//$row_address = isset($row_address) ? $row_address : '@CODE ';
 
-// GET TV MULTI TV VALUE
+/*
+| 
+| GET MTV DATA
+|
+*/
 
 $out = '';
 
-$data = current($modx->getTemplateVarOutput(array($tvId), $docId)); // пулучаем первое значение массива
+$data = $modx->getTemplateVarOutput(array($tvId), $docId); // пулучаем первое значение массива
 
-if (empty($data)) { return; }
+if (empty($data)) {
+    return \DLTemplate::getInstance($modx)->parseChunk($emptyTpl, array()); 
+}
+
+$data = current($modx->getTemplateVarOutput(array($tvId), $docId)); // пулучаем первое значение массива
 
 $arr = json_decode($data, true);
 
-if (isset($arr['fieldValue']) && count($arr['fieldValue']) > 0) {
-
-    $cnt =  $depth == 'all' ? count($arr['fieldValue']) : $depth;
+if (!isset($arr['fieldValue']) || count($arr['fieldValue']) < 1) {
+    return \DLTemplate::getInstance($modx)->parseChunk($emptyTpl, array());
+}
     
-    $i = 0;
-    for ($i=0; $i < $cnt; $i++) { 
-        
-        $dataArr = $arr['fieldValue'][$i];
+$mtvArr = $arr['fieldValue'];
 
-        $dataArr['id'] = $docId;
+// СОРТИРОВКА
+// в обратную сторону
+if ($sortDir == 'DESC') {
+    $mtvArr = array_reverse($mtvArr);        
+}
 
-        // если нельзя выводить параметр - пропускаем
-        if ($check != '' && isset($dataArr[$check]) && $dataArr[$check] != 1) { continue; }
 
-            /*
-            * PREPARE 
-            */
-            if (!empty($prepare)) {
-                $dataPrepare = $modx->runSnippet($prepare, array('data' => $dataArr));
+/*
+|
+| CONFIG PREPARE
+| обрабатывается документ и общий данные mtv
+|
+*/
 
-                if (is_array($dataPrepare) && count($dataPrepare) > 0) {
-                    $dataArr = array_merge($dataArr, $dataPrepare);
-                }
-            }
-            
-            /*
-            * TO PLACEHOLDERS
-            */
-            if ($toPlaceholders == 1) {
-            
-                foreach ($dataArr as $name => $value) {
-                    $num = $depth == 'all' ? '-'.($i+1) : ''; // [+phone-1+], [+phone-2+]
-                    $modx->setPlaceholder($suf.'.'.$name.$num, $value);
-                }
-            
-            } else {
+if (!empty($beforePrepare)) {
+    $dataPrepare = $modx->runSnippet($beforePrepare, array('data' => $confArr));
 
-                /*
-                * PARSE TPL
-                */
+    if (is_array($dataPrepare) && count($dataPrepare) > 0) {
+        $confArr = array_merge($confArr, $dataPrepare);
+    } 
+}
 
-                if(!empty($thumbField) && isset($dataArr[$thumbField])) { 
-                    $dataArr['thumb'] = $modx->runSnippet('phpthumb', array(
-                        'input' => $dataArr[$thumbField],
-                        'options' => $thumbOptions
-                        )
-                    );
-                }
 
-                $dataArr['num'] = $i + 1;
+/*
+|
+| PARSE ROW MTV DATA
+|
+*/
 
-                // парсим дополнительные шаблоны row_address, row_desc etc
-                foreach ($rowArr as $key => $rowTpl) {
-                    if (empty($dataArr[$key])) { continue; } // если поле пусто, шаблон не выводим
-                    $dataArr['row_'.$key] =  \DLTemplate::getInstance($modx)->parseChunk($rowTpl, $dataArr);
-                }
+// Сколько значений выводим
+$totalCnt = count($mtvArr);
+$cnt =  $display == 'all' ? $totalCnt : $display;
+$confArr['cnt'] = $cnt;
+$countArr['totalCnt'] = $totalCnt;
 
-                $tpl = $dataArr['num'] === 1 && !empty($firstTpl) ? $firstTpl : $tpl;
-                $tpl = $dataArr['num'] === $cnt && !empty($lastTpl) ? $lastTpl : $tpl;
+$i = 0;
+for ($i=0; $i < $cnt; $i++) { 
+    
+    $dataArr = $mtvArr[$i];
 
-                $out .= \DLTemplate::getInstance($modx)->parseChunk($tpl, $dataArr);
-            
-            }
+    $dataArr['id'] = $docId;
+    $dataArr['num'] = $i + 1;
 
+    $confArr['parsedItems'] = $i + 1;
+
+    /*
+    * PREPARE 
+    */
+    if (!empty($prepare)) {
+        $dataPrepare = $modx->runSnippet($prepare, array('data' => $dataArr, 'config' => $confArr));
+
+        if (is_array($dataPrepare) && count($dataPrepare) > 0) {
+            $dataArr = array_merge($dataArr, $dataPrepare);
+        } else {
+            continue;
+        }
     }
+    
+    /*
+    * TO PLACEHOLDERS
+    */
+    if ($toPlaceholders == 1) {
+
+        if (!empty($phFieldName) && isset($dataArr[$phFieldName]) && isset($dataArr[$phFieldValue])) {
+            $modx->setPlaceholder($suf.'.'.$dataArr[$phFieldName], $dataArr[$phFieldValue]);
+            continue;
+        }
+
+        // все значения переводим в плейсхоледры
+        foreach ($dataArr as $name => $value) {
+            $num = '-'.($i+1); // [+phone-1+], [+phone-2+]
+            $modx->setPlaceholder($suf.'.'.$name.$num, $value);
+        }
+
+        continue;
+    } 
+
+    /*
+    * PARSE TPL
+    */
+    if(!empty($thumbField) && isset($dataArr[$thumbField])) { 
+        $dataArr['thumb'] = $modx->runSnippet('phpthumb', array(
+            'input' => $dataArr[$thumbField],
+            'options' => $thumbOptions
+            )
+        );
+    }
+
+    // парсим дополнительные шаблоны row_address, row_desc etc
+    foreach ($rowArr as $key => $rowTpl) {
+        if (empty($dataArr[$key])) { continue; } // если поле пусто, шаблон не выводим
+        $dataArr['row_'.$key] =  \DLTemplate::getInstance($modx)->parseChunk($rowTpl, $dataArr);
+    }
+
+    // определяем шаблон
+    $parseTpl = $tpl;
+    if ($dataArr['num'] === 1 && !empty($firstTpl)) {
+        $parseTpl = $firstTpl;
+    }
+    if ($dataArr['num'] === $cnt && !empty($lastTpl)) {
+        $parseTpl = $lastTpl;
+    }
+
+    $out .= \DLTemplate::getInstance($modx)->parseChunk($parseTpl, $dataArr);    
+
+}
+
+if ($toPlaceholders == 1) {
+    return;
+}
+
+/*
+|
+| AFTER PREPARE
+|
+*/
+
+if (!empty($afterPrepare)) {
+    $dataPrepare = $modx->runSnippet($afterPrepare, array('data' => $confArr));
+
+    if (is_array($dataPrepare) && count($dataPrepare) > 0) {
+        $confArr = array_merge($confArr, $dataPrepare);
+    } 
+}
+
+
+/*
+|
+| OUT MTV
+|
+*/
   
+$confArr['wrap'] = $out;
 
-} 
-
-
-$out = $out != '' ? \DLTemplate::getInstance($modx)->parseChunk($wrapTpl, array('wrap' => $out)) : '';
+$out = $out != '' 
+    ? \DLTemplate::getInstance($modx)->parseChunk($wrapTpl, $confArr) 
+    : \DLTemplate::getInstance($modx)->parseChunk($emptyTpl, $confArr);
 
 if ($outPlaceholder == 1) {
     $modx->setPlaceholder($suf.'.mtvout', $out);
